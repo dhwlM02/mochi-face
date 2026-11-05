@@ -27,6 +27,8 @@ if not OLLAMA.startswith("http"):
 MODEL = os.environ.get("MOCHI_MODEL", "")
 MEM_PATH = os.path.join(HERE, "memory.json")
 FACE_PATH = os.path.join(HERE, "index.html")
+if not os.path.exists(FACE_PATH):  # in the GitHub repo the face lives one folder up
+    FACE_PATH = os.path.join(os.path.dirname(HERE), "index.html")
 LOCK = threading.Lock()
 
 MOODS = ["neutral", "happy", "love", "sad", "angry", "surprised", "curious", "sleepy", "dizzy", "thinking"]
