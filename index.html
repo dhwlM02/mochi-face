@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Mochi Robot Face</title>
+<style>
+  :root{--bg:#000;--fg:#e8fbff;--muted:#7fa9b3;--panel:#0b1215;--btn:#111b20;--btn-active:#1a2a31;--line:#1f2d33;--accent:#3ef0ff;color-scheme:dark}
+  @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#000}}
+  :root[data-theme="dark"]{--bg:#000}
+  html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--fg)}
+  canvas{display:block;width:100vw;height:100vh;height:100dvh}
+  #start{position:fixed;inset:0;display:flex;align-items:flex-end;justify-content:center;z-index:5;cursor:pointer;padding:16px 16px max(28px,env(safe-area-inset-bottom));box-sizing:border-box;text-align:center}
+  #start div{max-width:340px}
+  #start h1{font-size:20px;font-weight:600;margin:0 0 6px;letter-spacing:.01em}
+  #start p{margin:0;color:var(--muted);font-size:14px;line-height:1.5}
+  @media (max-height:460px){ #start{align-items:flex-start;padding-top:max(14px,env(safe-area-inset-top))} #start p{display:none} #start h1{font-size:16px} }
+  #gear{position:fixed;right:max(12px,env(safe-area-inset-right));bottom:max(12px,env(safe-area-inset-bottom));width:40px;height:40px;border-radius:12px;border:1px solid var(--line);background:transparent;color:var(--muted);opacity:.3;font-size:18px;z-index:3;cursor:pointer;display:none}
+  #panel{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);width:min(540px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;z-index:4;display:none;box-sizing:border-box;touch-action:pan-y}
+  #panel.open{display:block}
+  #panel h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 8px;font-weight:600}
+  .row{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+  .row button{flex:1 1 auto;min-width:84px;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--btn);color:var(--fg);font-size:14px;cursor:pointer}
+  .row button:active{background:var(--btn-active)}
+  #status{font-size:13px;color:var(--muted);line-height:1.6;white-space:pre-line;margin-bottom:14px}
+  .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+  .top strong{font-size:15px}
+  .top button{background:transparent;border:0;color:var(--muted);font-size:22px;cursor:pointer;padding:4px 8px}
+  video{position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<video id="v" playsinline muted></video>
+<div id="start"><div><h1>Tap to wake Mochi</h1><p>Pet it with a tap, hold for love, tap fast to annoy it, drag to make it watch your finger. Leave it alone and it falls asleep.</p></div></div>
+<button id="gear" aria-label="Settings">⚙</button>
+<div id="panel" role="dialog" aria-label="Robot controls">
+  <div class="top"><strong>Mochi controls</strong><button id="close" aria-label="Close">×</button></div>
+  <div id="status"></div>
+  <h2>Moods</h2>
+  <div class="row" id="moods"></div>
+  <h2>Simulate robot events</h2>
+  <div class="row" id="events"></div>
+  <h2>Screen</h2>
+  <div class="row"><button id="snd">Sound: on</button><button id="fs">Fullscreen</button></div>
+</div>
+<script>
+(() => {
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+let W = 0, H = 0;
+function resize(){ const d = Math.min(window.devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; cv.width = W*d; cv.height = H*d; ctx.setTransform(d,0,0,d,0,0); }
+addEventListener('resize', resize); resize();
+
+const now = () => performance.now();
+const clamp = (v, a=-1, b=1) => Math.max(a, Math.min(b, v));
+
+// ---------- Moods: per-eye shape + colour ----------
+const CYAN=[62,240,255], PINK=[255,95,162], RED=[255,92,80], BLUE=[106,168,255], DIM=[38,150,166];
+const E = o => Object.assign({w:1,h:1,top:0,slope:0,happy:0}, o);
+const both = (o, col) => ({L:E(o), R:E(o), col});
+const MOODS = {
+  neutral:   both({}, CYAN),
+  happy:     both({w:1.05,h:.95,happy:.85}, CYAN),
+  love:      both({w:1.08,h:1,happy:.75}, PINK),
+  sad:       both({h:.85,top:.32,slope:-.4}, BLUE),
+  angry:     both({h:.95,top:.28,slope:.5}, RED),
+  surprised: both({w:1.12,h:1.28}, CYAN),
+  curious:   {L:E({w:1.05,h:1.15}), R:E({w:.95,h:.88,top:.22,slope:.12}), col:CYAN},
+  sleepy:    both({h:.9,top:.55,slope:-.06}, DIM),
+  asleep:    both({h:.8,top:.93}, DIM),
+  dizzy:     {L:E({w:.78,h:.78}), R:E({w:1.12,h:1.12}), col:CYAN},
+};
+const cur = {L:E({h:.8,top:.93}), R:E({h:.8,top:.93}), col:DIM.slice()};
+
+// ---------- State ----------
+const S = {
+  mood:'asleep', until:0, cur:'asleep', happy:.5, lastAct:now(), asleep:true, sound:true,
+  gx:0, gy:0, tx:0, ty:.25, nextLook:0, look:{x:0,y:0,until:0}, touch:null,
+  blinkT:-1, nextBlink:0, dbl:false, bounce:0, bv:0, zs:[], lastZ:0,
+  face:{present:false, lastSeen:-1e9, lastGone:-1e9, since:0, gx:0, gy:0, size:0},
+  cam:'off', mode:'none', detector:null, taps:[],
+};
+let started = false;
+
+function setMood(m, ms=2000){ if(!MOODS[m]) return; S.mood = m; S.until = now() + ms; }
+function baseMood(t){
+  const idle = t - S.lastAct;
+  if(!S.asleep && idle > 120000) S.asleep = true;
+  if(S.asleep) return 'asleep';
+  if(idle > 60000) return 'sleepy';
+  return S.happy > .78 ? 'happy' : 'neutral';
+}
+function wake(){
+  S.asleep = false; S.lastAct = now();
+  setMood('surprised', 650); sfx('wake');
+  setTimeout(() => { setMood('happy', 1800); S.bv -= 6; }, 650);
+}
+function activity(){ S.lastAct = now(); if(S.asleep) wake(); }
+function lookAt(x, y, ms){ S.look = {x, y, until: now()+ms}; }
+
+// ---------- Interactions ----------
+function pet(){
+  const t = now();
+  if(S.asleep){ activity(); return; }
+  activity();
+  S.taps = S.taps.filter(x => t - x < 1500); S.taps.push(t);
+  if(S.taps.length >= 6){ setMood('angry', 2500); sfx('angry'); S.happy = Math.max(0, S.happy - .2); S.taps = []; return; }
+  S.happy = Math.min(1, S.happy + .08); setMood('happy', 1800); S.bv -= 6; sfx('happy');
+}
+function greet(){
+  setMood('surprised', 600); sfx('surprised');
+  setTimeout(() => { setMood('happy', 2200); sfx('greet'); S.bv -= 7; }, 600);
+}
+const EVENTS = {
+  pet: () => pet(),
+  love: () => { activity(); setMood('love', 3500); S.happy = Math.min(1, S.happy + .15); sfx('love'); },
+  shake: () => { activity(); setMood('dizzy', 2600); sfx('dizzy'); },
+  cliff: () => { activity(); setMood('surprised', 1500); lookAt(0, 1, 1500); sfx('surprised'); },
+  loud: () => { activity(); setMood('surprised', 900); S.bv -= 10; sfx('surprised'); },
+  lifted: () => { activity(); setMood('curious', 1500); lookAt(0, -.8, 1500); },
+};
+
+let press = null;
+cv.addEventListener('pointerdown', e => {
+  if(!started) return;
+  const p = {x:e.clientX, y:e.clientY, t:now(), moved:false, fired:false};
+  press = p; S.touch = {x:e.clientX, y:e.clientY};
+  p.timer = setTimeout(() => { if(press === p && !p.moved){ p.fired = true; EVENTS.love(); } }, 650);
+});
+cv.addEventListener('pointermove', e => {
+  if(!press) return;
+  S.touch = {x:e.clientX, y:e.clientY};
+  if(!press.moved && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 18){ press.moved = true; activity(); if(S.cur === 'neutral') setMood('curious', 900); }
+});
+const endPress = () => {
+  if(!press) return;
+  clearTimeout(press.timer);
+  if(!press.fired && !press.moved && now() - press.t < 400) pet();
+  press = null; S.touch = null;
+};
+cv.addEventListener('pointerup', endPress);
+cv.addEventListener('pointercancel', endPress);
+
+let shakes = [];
+addEventListener('devicemotion', e => {
+  const a = e.accelerationIncludingGravity; if(!a || a.x == null || !started) return;
+  const m = Math.hypot(a.x, a.y, a.z), t = now();
+  if(Math.abs(m - 9.8) > 11){ shakes = shakes.filter(x => t - x < 1200); shakes.push(t); if(shakes.length >= 4){ shakes = []; EVENTS.shake(); } }
+});
+
+// ---------- Sound ----------
+let AC = null;
+function tone(f0, f1, dur, type='sine', vol=.07, delay=0){
+  if(!AC || !S.sound) return;
+  const t0 = AC.currentTime + delay, o = AC.createOscillator(), g = AC.createGain();
+  o.type = type; o.frequency.setValueAtTime(f0, t0); o.frequency.exponentialRampToValueAtTime(f1, t0 + dur);
+  g.gain.setValueAtTime(.0001, t0); g.gain.exponentialRampToValueAtTime(vol, t0 + .02); g.gain.exponentialRampToValueAtTime(.0001, t0 + dur);
+  o.connect(g).connect(AC.destination); o.start(t0); o.stop(t0 + dur + .03);
+}
+const SFX = {
+  happy: () => { tone(880,1320,.09); tone(1100,1650,.1,'sine',.06,.1); },
+  greet: () => { tone(660,700,.08); tone(880,900,.08,'sine',.07,.1); tone(1175,1320,.14,'sine',.07,.2); },
+  angry: () => { tone(220,160,.25,'sawtooth',.035); tone(200,140,.25,'sawtooth',.035,.28); },
+  love: () => { tone(520,780,.35,'sine',.06); tone(780,1040,.3,'sine',.04,.3); },
+  surprised: () => tone(420,1250,.16,'triangle',.07),
+  sad: () => tone(700,330,.45,'sine',.05),
+  wake: () => { tone(400,700,.12,'triangle',.06); tone(700,1000,.12,'triangle',.06,.13); },
+  dizzy: () => tone(900,300,.5,'triangle',.05),
+};
+function sfx(n){ try{ SFX[n] && SFX[n](); }catch(e){} }
+
+// ---------- Camera: face tracking, falls back to motion tracking ----------
+const video = document.getElementById('v');
+const MP = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
+async function startCamera(){
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){ S.cam = 'unavailable'; return; }
+  try{
+    const st = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user', width:{ideal:320}, height:{ideal:240}}, audio:false});
+    video.srcObject = st; await video.play(); S.cam = 'on'; S.mode = 'motion';
+  }catch(e){ S.cam = 'blocked'; return; }
+  try{
+    const vis = await import(MP + '/vision_bundle.mjs');
+    const fs = await vis.FilesetResolver.forVisionTasks(MP + '/wasm');
+    const opts = d => ({baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite', delegate:d}, runningMode:'VIDEO', minDetectionConfidence:.5});
+    try{ S.detector = await vis.FaceDetector.createFromOptions(fs, opts('GPU')); }
+    catch(e){ S.detector = await vis.FaceDetector.createFromOptions(fs, opts('CPU')); }
+    S.mode = 'face';
+  }catch(e){ S.mode = 'motion'; }
+}
+let lastDet = 0, prev = null;
+const mc = document.createElement('canvas'); mc.width = 48; mc.height = 36;
+const mx = mc.getContext('2d', {willReadFrequently:true});
+function detect(t){
+  if(S.cam !== 'on' || t - lastDet < 110 || video.readyState < 2) return;
+  lastDet = t;
+  if(S.mode === 'face' && S.detector){
+    let r; try{ r = S.detector.detectForVideo(video, t); }catch(e){ return; }
+    const d = r && r.detections && r.detections[0];
+    if(d){ const b = d.boundingBox, vw = video.videoWidth || 320, vh = video.videoHeight || 240;
+      seen(t, (b.originX + b.width/2)/vw, (b.originY + b.height/2)/vh, b.width/vw); }
+  } else {
+    mx.drawImage(video, 0, 0, 48, 36);
+    const px = mx.getImageData(0, 0, 48, 36).data, g = new Uint8Array(48*36);
+    for(let i = 0; i < g.length; i++) g[i] = (px[i*4]*3 + px[i*4+1]*6 + px[i*4+2]) / 10;
+    if(prev){ let n = 0, sx = 0, sy = 0;
+      for(let i = 0; i < g.length; i++) if(Math.abs(g[i] - prev[i]) > 28){ n++; sx += i % 48; sy += (i/48)|0; }
+      if(n > 30) seen(t, sx/n/48, sy/n/36, 0); }
+    prev = g;
+  }
+}
+function seen(t, cx, cy, size){
+  const F = S.face;
+  F.gx = clamp(-(cx - .5) * 2.4); F.gy = clamp((cy - .5) * 2.2);
+  if(!F.present){
+    if(S.asleep) activity();
+    else if(t - F.lastSeen > 4000) greet();
+    F.present = true; F.since = t;
+  }
+  F.lastSeen = t; F.size = size; S.lastAct = t;
+  if(size > .55 && t > S.until) setMood('surprised', 900);
+}
+function presenceTick(t){
+  const F = S.face;
+  if(F.present && t - F.lastSeen > 3000){
+    F.present = false; F.lastGone = t;
+    if(t - F.since > 6000 && !S.asleep){ setMood('sad', 2200); sfx('sad'); }
+  }
+}
+
+// ---------- Drawing ----------
+function rr(x, y, w, h, r){
+  ctx.beginPath();
+  if(ctx.roundRect){ ctx.roundRect(x, y, w, h, r); return; }
+  ctx.moveTo(x+r, y); ctx.arcTo(x+w, y, x+w, y+h, r); ctx.arcTo(x+w, y+h, x, y+h, r); ctx.arcTo(x, y+h, x, y, r); ctx.arcTo(x, y, x+w, y, r); ctx.closePath();
+}
+function drawEye(cx, cy, bw, bh, open, p, side, col){
+  const w = bw * p.w, h = bh * p.h, r = Math.min(w, h) * .24;
+  ctx.save(); ctx.translate(cx, cy); ctx.scale(1, open);
+  rr(-w/2, -h/2, w, h, r); ctx.fillStyle = col; ctx.fill(); ctx.clip();
+  ctx.fillStyle = '#000';
+  if(p.top > .005 || Math.abs(p.slope) > .005){
+    const oX = side*w/2*1.4, iX = -side*w/2*1.4;
+    const yO = -h/2 + h*(p.top - p.slope/2), yI = -h/2 + h*(p.top + p.slope/2);
+    ctx.beginPath(); ctx.moveTo(oX, -h); ctx.lineTo(iX, -h); ctx.lineTo(iX, yI); ctx.lineTo(oX, yO); ctx.closePath(); ctx.fill();
+  }
+  if(p.happy > .01){ ctx.beginPath(); ctx.ellipse(0, h/2 + h*.35, w*.85, h*(.35 + .6*p.happy), 0, 0, Math.PI*2); ctx.fill(); }
+  ctx.restore();
+  // erase the faint anti-aliased rim left where the lids cover the eye
+  ctx.save(); ctx.translate(cx, cy); ctx.scale(1, open);
+  rr(-w/2, -h/2, w, h, r); ctx.strokeStyle = '#000'; ctx.lineWidth = 2.5; ctx.stroke();
+  ctx.restore();
+}
+function draw(t, open){
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  const ew = Math.min(W*.24, H*.46), eh = ew*1.08, gap = ew*.5;
+  const breathe = 1 + Math.sin(t/650) * (S.asleep ? .03 : .012);
+  const ox = S.gx*ew*.55, cy = H/2 + S.gy*eh*.32 + S.bounce*eh*.12;
+  const c = cur.col.map(Math.round).join(','), col = `rgb(${c})`;
+  const ps = S.gx * .07;
+  drawEye(W/2 - (gap/2 + ew/2) + ox, cy, ew*(1-ps), eh*breathe*(1-ps), open, cur.L, -1, col);
+  drawEye(W/2 + (gap/2 + ew/2) + ox, cy, ew*(1+ps), eh*breathe*(1+ps), open, cur.R, 1, col);
+  for(const z of S.zs){
+    const p = (t - z.t0) / 2600, size = ew*(.16 + .22*p);
+    ctx.font = `600 ${size}px system-ui, sans-serif`;
+    ctx.fillStyle = `rgba(${c},${Math.sin(p*Math.PI).toFixed(3)})`;
+    ctx.fillText('z', W/2 + ew*1.05 + p*ew*.5, H/2 - eh*.45 - p*eh*.9);
+  }
+}
+
+// ---------- Main loop ----------
+let last = now();
+function frame(t){
+  const dt = Math.min(.05, (t - last) / 1000); last = t;
+  if(started){ detect(t); presenceTick(t); }
+  const m = t < S.until ? S.mood : baseMood(t); S.cur = m;
+  S.happy += (.5 - S.happy) * dt * .02;
+
+  // where to look
+  if(S.touch){ S.tx = clamp((S.touch.x/W - .5)*2.2); S.ty = clamp((S.touch.y/H - .5)*2.2); }
+  else if(t < S.look.until){ S.tx = S.look.x; S.ty = S.look.y; }
+  else if(m === 'dizzy'){ S.tx = Math.cos(t/120)*.7; S.ty = Math.sin(t/120)*.5; }
+  else if(S.asleep){ S.tx = 0; S.ty = .25; }
+  else if(t - S.face.lastSeen < 800){ S.tx = S.face.gx; S.ty = S.face.gy; }
+  else if(t > S.nextLook){
+    const sleepy = m === 'sleepy';
+    if(Math.random() < .45){ S.tx = 0; S.ty = sleepy ? .3 : 0; }
+    else { S.tx = (Math.random()*2 - 1)*.8; S.ty = (Math.random()*2 - 1)*.5 + (sleepy ? .3 : 0); }
+    S.nextLook = t + (sleepy ? 2500 : 1200) + Math.random()*2800;
+    if(m === 'neutral' && Math.random() < .08) setMood('curious', 1200);
+  }
+  const kg = 1 - Math.exp(-dt*14); S.gx += (S.tx - S.gx)*kg; S.gy += (S.ty - S.gy)*kg;
+
+  // blink
+  if(!S.asleep && t > S.nextBlink && S.blinkT < 0){ S.blinkT = t; S.nextBlink = t + 1800 + Math.random()*4200; S.dbl = Math.random() < .2; }
+  let open = 1;
+  if(S.blinkT >= 0){ const p = (t - S.blinkT) / 170;
+    if(p >= 1){ S.blinkT = -1; if(S.dbl){ S.dbl = false; S.blinkT = t + 60; } }
+    else open = Math.min(1, Math.max(.06, Math.abs(1 - 2*p))); }
+
+  // ease eye shapes toward the mood
+  const tg = MOODS[m], k = 1 - Math.exp(-dt*10);
+  for(const s of ['L','R']) for(const key in tg[s]) cur[s][key] += (tg[s][key] - cur[s][key])*k;
+  for(let i = 0; i < 3; i++) cur.col[i] += (tg.col[i] - cur.col[i])*k;
+
+  // bounce spring
+  S.bv += (-120*S.bounce - 12*S.bv)*dt; S.bounce += S.bv*dt;
+
+  // sleeping z's
+  if(S.asleep && t - S.lastZ > 1300){ S.lastZ = t; S.zs.push({t0:t}); }
+  S.zs = S.zs.filter(z => t - z.t0 < 2600);
+
+  draw(t, open);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ---------- Start, wake lock, fullscreen ----------
+async function requestWake(){ try{ await navigator.wakeLock.request('screen'); }catch(e){} }
+document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible' && started) requestWake(); });
+async function goFull(){ try{ await document.documentElement.requestFullscreen({navigationUI:'hide'}); }catch(e){} }
+
+const startEl = document.getElementById('start');
+startEl.addEventListener('click', () => {
+  if(started) return; started = true; startEl.style.display = 'none';
+  document.getElementById('gear').style.display = 'block';
+  try{ AC = new (window.AudioContext || window.webkitAudioContext)(); }catch(e){}
+  goFull(); requestWake();
+  wake();
+  startCamera().then(updStatus);
+});
+
+// ---------- Controls panel ----------
+const panel = document.getElementById('panel'), statusEl = document.getElementById('status');
+document.getElementById('gear').onclick = () => { panel.classList.add('open'); updStatus(); };
+document.getElementById('close').onclick = () => panel.classList.remove('open');
+const moodsEl = document.getElementById('moods');
+Object.keys(MOODS).forEach(m => { const b = document.createElement('button'); b.textContent = m[0].toUpperCase() + m.slice(1);
+  b.onclick = () => { if(m === 'asleep'){ S.asleep = true; } else { if(S.asleep){ S.asleep = false; } S.lastAct = now(); setMood(m, 3000); } }; moodsEl.appendChild(b); });
+const evEl = document.getElementById('events');
+[['pet','Pet'],['love','Hug'],['shake','Shake'],['cliff','Table edge'],['loud','Loud noise'],['lifted','Picked up']].forEach(([k, l]) => {
+  const b = document.createElement('button'); b.textContent = l; b.onclick = () => EVENTS[k](); evEl.appendChild(b); });
+const snd = document.getElementById('snd');
+snd.onclick = () => { S.sound = !S.sound; snd.textContent = 'Sound: ' + (S.sound ? 'on' : 'off'); };
+document.getElementById('fs').onclick = goFull;
+function updStatus(){
+  const camTxt = {off:'starting…', on: S.mode === 'face' ? 'on, tracking your face' : 'on, tracking movement', blocked:'blocked', unavailable:'not available'}[S.cam];
+  let s = `Mood: ${S.cur}\nCamera: ${camTxt}\nYou: ${S.face.present ? 'seen' : 'not seen'}`;
+  if(S.cam === 'blocked' || S.cam === 'unavailable') s += `\n\nThe camera can't be used in this view, so the eyes follow your finger instead. Open the hosted copy of this page in Chrome to turn on face tracking.`;
+  statusEl.textContent = s;
+}
+setInterval(() => { if(panel.classList.contains('open')) updStatus(); }, 500);
+
+// Hook for the future Android app / ESP32: window.mochi.event('cliff'), window.mochi.setMood('happy', 2000)
+window.mochi = { setMood:(m, ms=3000) => { S.lastAct = now(); if(m !== 'asleep') S.asleep = false; setMood(m, ms); }, event:n => EVENTS[n] && EVENTS[n](), state:() => ({mood:S.cur, happy:S.happy, asleep:S.asleep, camera:S.cam, tracking:S.mode, userSeen:S.face.present}) };
+})();
+</script>
+</body>
+</html>
